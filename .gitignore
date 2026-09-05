@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+target/
+**/target/
+*.log
+*.swp
+*~
+.DS_Store
+.idea/
+.vscode/
+saved-files
+specs/
+specing/
+nohup.out
