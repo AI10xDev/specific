@@ -21,13 +21,13 @@ import traceback
 
 
 class Terminal:
-    def __init__(self, binary, root, name):
+    def __init__(self, binary, root, name, color=False):
         self.root, self.pending, self.screen, self.trace = root, b"", "", b""
         self.fd, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
         # No inherited credentials/config, and python3 cannot start the completion agent.
         env = dict(HOME=str(root), XDG_CONFIG_HOME=str(root), XDG_CONFIG_DIRS=str(root),
-                   XDG_DATA_HOME=str(root), XDG_DATA_DIRS=str(root), TERM="xterm", NO_COLOR="1",
+                   XDG_DATA_HOME=str(root), XDG_DATA_DIRS=str(root), TERM="xterm", NO_COLOR="" if color else "1",
                    PATH=str(root / "bin"), KIBI_RUN_COMMAND=str(root / "runner ; literal"))
         try:
             self.proc = subprocess.Popen([str(binary)] + ([name] if name else []), cwd=root,
@@ -97,7 +97,7 @@ class Terminal:
 
 
 @contextlib.contextmanager
-def editor(binary, name=None, content=""):
+def editor(binary, name=None, content="", color=False):
     with tempfile.TemporaryDirectory(prefix="kibi-pty-") as directory:
         root = Path(directory).resolve()
         (root / "bin").mkdir()
@@ -122,7 +122,7 @@ print("FINISHED", flush=True)
         runner.chmod(0o755)
         if name:
             (root / name).write_text(content)
-        terminal = Terminal(binary, root, name)
+        terminal = Terminal(binary, root, name, color=color)
         try:
             terminal.wait("Output | Idle")
             yield terminal

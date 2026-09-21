@@ -17,6 +17,7 @@ pub mod ansi_escape;
 mod config;
 mod editor;
 mod error;
+mod markdown;
 mod output;
 mod row;
 mod syntax;

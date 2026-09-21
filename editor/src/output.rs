@@ -13,6 +13,8 @@ use std::{
     time::Duration,
 };
 
+use crate::markdown::Markdown;
+
 const MAX_LINES: usize = 1000;
 const MAX_LINE_BYTES: usize = 8192;
 const CHUNK_BYTES: usize = 4096;
@@ -32,6 +34,7 @@ enum Escape {
 /// Bounded, terminal-safe shell output. The last entry may be an unfinished line.
 pub struct Output {
     pub(crate) lines: VecDeque<String>,
+    pub(crate) markdown: Markdown,
     pub(crate) status: String,
     child: Option<Child>,
     receiver: Option<Receiver<io::Result<Vec<u8>>>>,
@@ -46,6 +49,7 @@ impl Default for Output {
     fn default() -> Self {
         Self {
             lines: VecDeque::new(),
+            markdown: Markdown::default(),
             status: "Idle".into(),
             child: None,
             receiver: None,
@@ -264,8 +268,10 @@ impl Output {
         if c == '\n' {
             self.carriage_return = false;
             self.lines.push_back(String::new());
-            if self.lines.len() > MAX_LINES {
-                self.lines.pop_front();
+            if self.lines.len() > MAX_LINES
+                && let Some(line) = self.lines.pop_front()
+            {
+                self.markdown.advance(&line);
             }
             return;
         }
@@ -388,6 +394,24 @@ mod tests {
         }
         output.decode(&[], true);
         assert_eq!(output.lines, ["red!green"]);
+    }
+
+    #[test]
+    fn markdown_fence_survives_scrollback_eviction_and_split_reads() {
+        let mut output = Output::default();
+        for byte in b"\x1b[31m```rust\x1b[0m\n" {
+            output.decode(&[*byte], false);
+        }
+        for _ in 0..MAX_LINES {
+            output.decode(b"# code\n", false);
+        }
+        let mut markdown = output.markdown;
+        assert!(markdown.advance("still code"));
+        output.decode(b"```\n", false);
+        for line in &output.lines {
+            markdown.advance(line);
+        }
+        assert!(!markdown.advance("outside code"));
     }
 
     #[test]

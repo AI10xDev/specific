@@ -938,6 +938,18 @@ impl Editor {
     /// Draw rows of text and empty rows on the terminal, by adding characters
     /// to the buffer.
     fn draw_rows(&self, buffer: &mut String) -> Result<(), Error> {
+        let start = self.output.as_ref().map_or(0, |output| {
+            output.lines.len().saturating_sub(self.screen_rows.saturating_sub(1))
+        });
+        let mut markdown = self.output.as_ref().map(|output| output.markdown).unwrap_or_default();
+        if self.use_color
+            && self.output_width() > 0
+            && let Some(output) = &self.output
+        {
+            for line in output.lines.iter().take(start) {
+                markdown.advance(line);
+            }
+        }
         let row_it = self.rows.iter().map(Some).chain(repeat(None)).enumerate();
         for (i, row) in row_it.skip(self.cursor.roff).take(self.screen_rows) {
             buffer.push_str(CLEAR_LINE_RIGHT_OF_CURSOR);
@@ -946,14 +958,17 @@ impl Editor {
             {
                 let y = i - self.cursor.roff;
                 let title = format!("Output | {}", output.status);
-                let start = output.lines.len().saturating_sub(self.screen_rows.saturating_sub(1));
                 let text = if y == 0 {
                     &title
                 } else {
                     output.lines.get(start + y - 1).map_or("", String::as_str)
                 };
                 let width = self.output_width() - 1;
-                let used = draw_pane_text(buffer, text, width);
+                let used = if self.use_color && y > 0 {
+                    markdown.draw(buffer, text, width)
+                } else {
+                    draw_pane_text(buffer, text, width)
+                };
                 buffer.extend(iter::repeat_n(' ', width - used));
                 buffer.push('|');
             }
@@ -2095,6 +2110,24 @@ mod tests {
             assert_eq!(draw_pane_text(&mut rendered, &text.repeat(40), 39), 38);
             assert_eq!(rendered, text.repeat(19));
         }
+    }
+
+    #[test]
+    fn output_markdown_respects_color_setting_and_hidden_fences() -> Result<(), Error> {
+        let mut output = Output::default();
+        output.lines.extend(["```".into(), "# code".into(), "```".into()]);
+        let mut editor =
+            Editor { window_width: 40, screen_rows: 3, output: Some(output), ..Default::default() };
+        editor.update_screen_cols();
+        let mut rendered = String::new();
+        editor.draw_rows(&mut rendered)?;
+        assert!(rendered.contains(&format!("\x1b[33m# code{RESET}             |")));
+        editor.use_color = false;
+        rendered.clear();
+        editor.draw_rows(&mut rendered)?;
+        assert!(rendered.contains("# code             |"));
+        assert!(!rendered.contains("\x1b[33m"));
+        Ok(())
     }
 
     #[test]
