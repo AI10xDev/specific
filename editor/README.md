@@ -282,14 +282,27 @@ integration. See the repository-level README for portable installation.
 | <kbd>Ctrl</kbd> + <kbd>G</kbd> | Go to `<line number>[:<column number>]` position              |
 | <kbd>Ctrl</kbd> + <kbd>Q</kbd> | Quit                                                          |
 | <kbd>Ctrl</kbd> + <kbd>D</kbd> | Duplicate the current row                                     |
-| <kbd>Ctrl</kbd> + <kbd>E</kbd> | Execute an external command and paste its output              |
-| <kbd>Ctrl</kbd> + <kbd>R</kbd> | Remove an entire line                                         |
+| <kbd>Ctrl</kbd> + <kbd>E</kbd> | Run a shell command via `bash -c` with live left-pane output    |
+| <kbd>Ctrl</kbd> + <kbd>R</kbd> | Save and build; prompt with Save As for an unnamed buffer       |
+| <kbd>Ctrl</kbd> + <kbd>K</kbd> | Remove an entire line (formerly Ctrl+R)                        |
 | <kbd>Ctrl</kbd> + <kbd>C</kbd> | Copies the entire line                                        |
 | <kbd>Ctrl</kbd> + <kbd>X</kbd> | Cuts the entire line                                          |
 | <kbd>Ctrl</kbd> + <kbd>V</kbd> | Will paste the copied line                                    |
 | <kbd>Ctrl</kbd> + <kbd>←</kbd> | Moves cursor to previous word                                 |
 | <kbd>Ctrl</kbd> + <kbd>→</kbd> | Moves cursor to next word                                     |
 | <kbd>Ctrl</kbd> + <kbd>/</kbd> | Comment or uncomment the current line                         |
+
+Builds run noninteractively only after a successful save. `KIBI_RUN_COMMAND`
+must contain an executable path, not a shell command string; the saved filename
+is passed as a single argument. The `spec` shell integration resolves
+`specific-run-build` by default and preserves a nonempty external override.
+Use an executable wrapper for custom build arguments.
+
+`Ctrl+E` prompts for arbitrary shell syntax. Both commands show live output in
+the left pane, never inserting it into the buffer. The editor prevents
+overlapping runs, and quitting stops the active job. The pane auto-tails a
+bounded number of retained lines and discards older output; manual output
+scrolling is not available. See [specific configuration](../docs/CONFIGURATION.md#editor-commands).
 
 ### Configuration
 
@@ -386,7 +399,7 @@ editor written by Salvatore Sanfilippo (antirez) in C, and
 - Syntax highlighting: multi-line strings
 - _Save as_ prompt when no file name has been provided
 - Command to duplicate the current row, to quickly move between words
-- Ability to execute an external command from the editor and paste its output
+- Ability to run builds and shell commands with live output in a left pane
 - Support for end-of-options delimiter `--` (following [POSIX.1-2024 12. Utility
   Conventions](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap12.html))
 - Can be used as the editor for the _`sudoers`_ file via [`visudo`](https://www.man7.org/linux/man-pages/man8/visudo.8.html)

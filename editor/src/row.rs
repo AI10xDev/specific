@@ -177,15 +177,36 @@ impl Row {
         self.hl_state
     }
 
-    /// Draw the row and write the result to a buffer. An `offset` can be given,
-    /// as well as a limit on the length of the row (`max_len`). After
-    /// writing the characters, clear the rest of the line and move the
-    /// cursor to the start of the next line.
+    /// Draw the row into a buffer, with `offset` and `max_len` in terminal columns.
     pub fn draw(&self, offset: usize, max_len: usize, buffer: &mut String, use_color: bool) {
         let mut current_hl_type = HlType::Normal;
-        let chars = self.render.chars().skip(offset).take(max_len);
-        let mut rx = self.render.chars().take(offset).map(|c| c.width().unwrap_or(1)).sum();
-        for (c, mut hl_type) in chars.zip(self.hl.iter().skip(offset)) {
+        let end = offset.saturating_add(max_len);
+        let mut rx = 0;
+        let mut visible = false;
+        for (byte, c) in self.render.char_indices() {
+            let width = if c.is_ascii_control() { 1 } else { c.width().unwrap_or(1) };
+            let start = rx;
+            rx += width;
+            if width == 0 {
+                // Keep combining marks only when their base was drawn, even at the right edge.
+                if !visible {
+                    continue;
+                }
+            } else {
+                visible = false;
+                if rx <= offset {
+                    continue;
+                }
+                if start >= end || rx > end {
+                    break;
+                }
+                if start < offset {
+                    buffer.extend(repeat_n(' ', rx - offset));
+                    continue;
+                }
+                visible = true;
+            }
+            let mut hl_type = self.hl[byte];
             if c.is_ascii_control() {
                 let rendered_char = if (c as u8) <= 26 { (b'@' + c as u8) as char } else { '?' };
                 push_colored(buffer, WBG, &rendered_char.to_string(), use_color);
@@ -195,21 +216,20 @@ impl Row {
                 }
             } else {
                 if let Some(match_segment) = &self.match_segment {
-                    if match_segment.contains(&rx) {
+                    if match_segment.contains(&start) {
                         // Set the highlight type to Match, i.e. set the background to cyan
-                        hl_type = &HlType::Match;
-                    } else if use_color && rx == match_segment.end {
+                        hl_type = HlType::Match;
+                    } else if use_color && current_hl_type == HlType::Match {
                         // Reset the formatting, in particular the background
                         buffer.push_str(RESET);
                     }
                 }
-                if use_color && current_hl_type != *hl_type {
+                if use_color && current_hl_type != hl_type {
                     buffer.push_str(&hl_type.to_string());
                 }
-                current_hl_type = *hl_type;
+                current_hl_type = hl_type;
                 buffer.push(c);
             }
-            rx += c.width().unwrap_or(1);
         }
         buffer.push_str(if use_color { RESET } else { "" });
     }
@@ -218,4 +238,69 @@ impl Row {
 /// Return whether `c` is an ASCII separator.
 const fn is_sep(c: u8) -> bool {
     c.is_ascii_whitespace() || c == b'\0' || (c.is_ascii_punctuation() && c != b'_')
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::{HlState, HlType, NonZeroUsize, RESET, Row, SyntaxConf};
+
+    #[rstest]
+    #[case::wide_fits("a\u{754c}b", 0, 3, "a\u{754c}")]
+    #[case::wide_does_not_fit("a\u{754c}b", 0, 2, "a")]
+    #[case::wide_offset("a\u{754c}b", 1, 3, "\u{754c}b")]
+    #[case::partial_wide_offset("a\u{754c}b", 2, 2, " b")]
+    #[case::partial_wide_only("\u{754c}b", 1, 1, " ")]
+    #[case::after_wide("\u{754c}bc", 2, 1, "b")]
+    #[case::tabs("\u{754c}\tb", 0, 4, "\u{754c}  ")]
+    #[case::tab_offset("\u{754c}\tb", 3, 2, " b")]
+    #[case::combining_at_edge("e\u{301}\u{302}b", 0, 1, "e\u{301}\u{302}")]
+    #[case::combining_offset("e\u{301}b", 1, 1, "b")]
+    #[case::clipped_base("\u{754c}\u{301}b", 1, 2, " b")]
+    #[case::leading_combining("\u{301}b", 0, 1, "b")]
+    #[case::empty_width("e\u{301}", 0, 0, "")]
+    #[case::past_end("\u{754c}", 3, 2, "")]
+    #[case::control_width("\0b", 0, 1, "@")]
+    fn column_clipping(
+        #[case] text: &str, #[case] offset: usize, #[case] max_len: usize, #[case] expected: &str,
+    ) {
+        let mut row = Row::new(text.as_bytes().to_vec());
+        row.update(&SyntaxConf::default(), HlState::Normal, NonZeroUsize::new(4).unwrap());
+        let mut buffer = String::new();
+        row.draw(offset, max_len, &mut buffer, false);
+        assert_eq!(buffer, expected, "clipping must use terminal columns");
+    }
+
+    #[rstest]
+    #[case::wide("\u{754c} 12", 3)]
+    #[case::combining("e\u{301} 12", 2)]
+    #[case::tab("\u{754c}\t12", 4)]
+    fn byte_indexed_highlight(#[case] text: &str, #[case] offset: usize) {
+        let mut row = Row::new(text.as_bytes().to_vec());
+        let syntax = SyntaxConf { highlight_numbers: true, ..SyntaxConf::default() };
+        row.update(&syntax, HlState::Normal, NonZeroUsize::new(4).unwrap());
+        let mut buffer = String::new();
+        row.draw(offset, 2, &mut buffer, true);
+        assert_eq!(
+            buffer,
+            format!("{}12{RESET}", HlType::Number),
+            "syntax uses rendered byte indices"
+        );
+    }
+
+    #[test]
+    fn match_preserves_syntax_after_wide_character() {
+        let mut row = Row::new("\u{754c} 12".as_bytes().to_vec());
+        let syntax = SyntaxConf { highlight_numbers: true, ..SyntaxConf::default() };
+        row.update(&syntax, HlState::Normal, NonZeroUsize::new(4).unwrap());
+        row.match_segment = Some(3..4);
+        let mut buffer = String::new();
+        row.draw(2, 3, &mut buffer, true);
+        assert_eq!(
+            buffer,
+            format!(" {}1{RESET}{}2{RESET}", HlType::Match, HlType::Number),
+            "matches use terminal columns and restore byte-indexed syntax colors",
+        );
+    }
 }

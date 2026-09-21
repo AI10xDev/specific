@@ -13,6 +13,7 @@ edition = "2024"
 repository = "https://github.com/ilai-deutel/kibi"
 
 [dependencies]
+unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 
 [target.'cfg(unix)'.dependencies]

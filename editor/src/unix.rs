@@ -9,6 +9,7 @@
 #![expect(unsafe_code)]
 
 use std::io::{self, BufRead};
+use std::os::{fd::AsRawFd, unix::process::CommandExt};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
 // On UNIX systems, termios represents the terminal mode.
@@ -21,6 +22,61 @@ pub use crate::xdg::*;
 
 fn cerr(err: c_int) -> io::Result<()> {
     if err < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+}
+
+/// Detach jobs from the editor's controlling terminal before executing user code.
+pub fn detach_job(command: &mut std::process::Command) {
+    unsafe {
+        command.pre_exec(|| {
+            // A reused Command may already have run this hook.
+            if libc::getsid(0) == libc::getpid() {
+                return Ok(());
+            }
+            cerr(libc::setsid())
+        });
+    }
+}
+
+pub fn nonblocking_pipe(reader: &io::PipeReader) -> io::Result<()> {
+    let flags = unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_GETFL) };
+    cerr(flags)?;
+    cerr(unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) })
+}
+
+/// Snapshot the finite backlog so escaped writers cannot extend the final drain.
+pub fn pipe_pending(reader: &io::PipeReader) -> io::Result<usize> {
+    let mut bytes: c_int = 0;
+    cerr(unsafe { libc::ioctl(reader.as_raw_fd(), libc::FIONREAD, &raw mut bytes) })?;
+    usize::try_from(bytes).map_err(io::Error::other)
+}
+
+/// Kill a shell job, including descendants still in its dedicated process group.
+pub fn kill_process_group(id: u32) -> io::Result<()> {
+    let id = c_int::try_from(id).map_err(io::Error::other)?;
+    if id <= 0 {
+        return Err(io::Error::other("invalid process group"));
+    }
+    cerr(unsafe { libc::kill(-id, libc::SIGKILL) })
+}
+
+/// Check exit without releasing the PID until the job's remaining descendants are killed.
+pub fn try_wait_job(
+    child: &mut std::process::Child,
+) -> io::Result<Option<std::process::ExitStatus>> {
+    let mut info = std::mem::MaybeUninit::<siginfo_t>::zeroed();
+    cerr(unsafe {
+        libc::waitid(
+            libc::P_PID,
+            child.id(),
+            info.as_mut_ptr(),
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    })?;
+    if unsafe { info.assume_init().si_pid() } == 0 {
+        return Ok(None);
+    }
+    drop(kill_process_group(child.id()));
+    child.try_wait()
 }
 
 /// Return the current window size as (rows, columns).
@@ -102,4 +158,99 @@ pub fn stdin() -> io::Result<impl BufRead> {
 
 pub fn path(filename: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(filename)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs::File,
+        io,
+        os::{
+            fd::{AsRawFd, FromRawFd},
+            unix::process::CommandExt,
+        },
+        process::{Command, Stdio},
+        thread,
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    fn escaped_pipe_holder() -> io::Result<()> {
+        let Some(pid_file) = std::env::var_os("KIBI_OUTPUT_ESCAPED_PID") else {
+            return Ok(());
+        };
+        let script = if std::env::var_os("KIBI_OUTPUT_BUSY_WRITER").is_some() {
+            "while :; do printf '%04096d' 0; done"
+        } else {
+            "sleep 300"
+        };
+        let mut command = Command::new("sh");
+        command.args(["-c", script]);
+        super::detach_job(&mut command);
+        let child = command.spawn()?;
+        let pid_file = std::path::PathBuf::from(pid_file);
+        std::fs::write(pid_file.with_extension("tmp"), child.id().to_string())?;
+        std::fs::rename(pid_file.with_extension("tmp"), pid_file)?;
+        println!("FINISHED");
+        // Intentionally leave the detached descendant holding the captured pipe.
+        Ok(())
+    }
+
+    #[test]
+    fn shell_job_has_no_controlling_tty() -> io::Result<()> {
+        if std::env::var_os("KIBI_OUTPUT_PTY_TEST").is_some() {
+            let tty = File::open("/dev/tty")?;
+            drop(tty);
+            let mut output = crate::output::Output::default();
+            output.start(Command::new("sh").args([
+                "-c",
+                "if ( : </dev/tty ) 2>/dev/null; then printf inherited; else printf detached; fi",
+            ]))?;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while output.is_running() {
+                output.poll();
+                assert!(Instant::now() < deadline, "detached job did not finish");
+                thread::sleep(Duration::from_millis(2));
+            }
+            assert_eq!(output.lines, ["detached"]);
+            return Ok(());
+        }
+
+        let (mut master, mut slave) = (-1, -1);
+        super::cerr(unsafe {
+            libc::openpty(
+                &raw mut master,
+                &raw mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        })?;
+        let master = unsafe { File::from_raw_fd(master) };
+        let slave = unsafe { File::from_raw_fd(slave) };
+        for file in [&master, &slave] {
+            super::cerr(unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) })?;
+        }
+        let fd = slave.as_raw_fd();
+        let mut command = Command::new(std::env::current_exe()?);
+        command
+            .args(["--exact", "sys::tests::shell_job_has_no_controlling_tty", "--nocapture"])
+            .env("KIBI_OUTPUT_PTY_TEST", "1")
+            .stdin(Stdio::null());
+        unsafe {
+            command.pre_exec(move || {
+                super::cerr(libc::setsid())?;
+                super::cerr(libc::ioctl(fd, libc::TIOCSCTTY, 0))
+            })
+        };
+        let result = command.output()?;
+        drop((master, slave));
+        assert!(
+            result.status.success(),
+            "PTY helper failed: {}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        Ok(())
+    }
 }

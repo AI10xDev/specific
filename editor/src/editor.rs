@@ -12,8 +12,11 @@ use std::{
     time::Instant,
 };
 
+use crate::output::Output;
 use crate::row::{HlState, Row};
 use crate::{Config, Error, ansi_escape::*, syntax::Conf as SyntaxConf, sys, terminal};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 const fn ctrl_key(key: u8) -> u8 {
     key & 0x1f
@@ -29,12 +32,13 @@ const COPY: u8 = ctrl_key(b'C');
 const PASTE: u8 = ctrl_key(b'V');
 const DUPLICATE: u8 = ctrl_key(b'D');
 const EXECUTE: u8 = ctrl_key(b'E');
-const REMOVE_LINE: u8 = ctrl_key(b'R');
+const RUN: u8 = ctrl_key(b'R');
+const REMOVE_LINE: u8 = ctrl_key(b'K');
 const TOGGLE_COMMENT: u8 = 31;
 const BACKSPACE: u8 = 127;
 
 const WELCOME_MESSAGE: &str = concat!("Kibi ", env!("CARGO_PKG_VERSION"));
-const HELP_MESSAGE: &str = "^S save | ^Q quit | ^F find | ^G go to | ^D duplicate | ^E execute | \
+const HELP_MESSAGE: &str = "^R save/run | ^E shell | ^S save | ^Q quit | ^F find | ^G go to | ^K remove | \
                             ^C copy | ^X cut | ^V paste | ^/ comment";
 pub const DEFAULT_SYSTEM_PROMPT: &str = "You are an inline text completion assistant. Return only a \
     short suffix that belongs immediately after the provided prefix. Complete the current word, add a \
@@ -155,6 +159,10 @@ pub struct Editor {
     last_keypress: Instant,
     /// Position of the cursor when the last completion request was sent
     last_completion_req_pos: Option<(usize, usize)>,
+    /// Executable receiving the saved spec path as its only argument.
+    run_command: Option<std::ffi::OsString>,
+    /// Captured shell output, separate from the editable document.
+    output: Option<Output>,
 }
 
 pub struct CompletionAgentProcess(std::process::Child);
@@ -167,6 +175,7 @@ impl Drop for CompletionAgentProcess {
 
 impl Default for Editor {
     fn default() -> Self {
+        let run_command = std::env::var_os("KIBI_RUN_COMMAND").filter(|value| !value.is_empty());
         Self {
             prompt_mode: None,
             cursor: CursorState::default(),
@@ -191,6 +200,8 @@ impl Default for Editor {
             ghost_text: None,
             last_keypress: Instant::now(),
             last_completion_req_pos: None,
+            output: run_command.as_ref().map(|_| Output::default()),
+            run_command,
         }
     }
 }
@@ -247,6 +258,20 @@ fn normalize_ghost_completion(completion: &str) -> Option<String> {
     (!suffix.is_empty()).then(|| suffix.to_owned())
 }
 
+/// Clip by terminal columns, never by UTF-8 bytes or character count.
+fn draw_pane_text(buffer: &mut String, text: &str, width: usize) -> usize {
+    let mut used = 0;
+    for grapheme in text.graphemes(true).filter(|text| !text.chars().any(char::is_control)) {
+        let columns = grapheme.width();
+        if used + columns > width {
+            break;
+        }
+        buffer.push_str(grapheme);
+        used += columns;
+    }
+    used
+}
+
 fn append_save_history(file_name: &str, history_file: &Path) -> io::Result<PathBuf> {
     if let Some(parent) = history_file.parent() {
         fs::create_dir_all(parent)?;
@@ -278,6 +303,37 @@ fn get_akey(c: u8) -> AKey {
 }
 
 impl Editor {
+    fn start_output(&mut self, command: &mut Command) {
+        let output = self.output.get_or_insert_with(Output::default);
+        if output.is_running() {
+            set_status!(self, "A command is already running");
+            return;
+        }
+        if let Err(error) = output.start(command) {
+            set_status!(self, "Can't run command: {error}");
+        }
+        self.update_screen_cols();
+    }
+
+    fn run_saved_file(&mut self) {
+        let (Some(command), Some(file_name)) = (&self.run_command, &self.file_name) else {
+            set_status!(
+                self,
+                "Set KIBI_RUN_COMMAND to a build executable, or use Ctrl+E for shell commands"
+            );
+            return;
+        };
+        // Resolve before passing the filename so leading dashes cannot become options.
+        match fs::canonicalize(file_name) {
+            Ok(path) => self.start_output(Command::new(command).arg(path)),
+            Err(error) => set_status!(self, "Can't run saved file: {error}"),
+        }
+    }
+
+    const fn output_width(&self) -> usize {
+        if self.output.is_some() && self.window_width >= 20 { self.window_width / 2 } else { 0 }
+    }
+
     fn save_mirror(&self, file_name: &str, copy_dir: &Path) -> io::Result<Option<PathBuf>> {
         let Some(path) = mirror_path(file_name, copy_dir) else { return Ok(None) };
         if let Some(parent) = path.parent() {
@@ -501,6 +557,9 @@ impl Editor {
     fn loop_until_keypress(&mut self, input: &mut impl BufRead) -> Result<Key, Error> {
         let mut bytes = input.bytes();
         loop {
+            if self.output.as_mut().is_some_and(Output::poll) {
+                self.refresh_screen()?;
+            }
             // Handle window size if a signal has be received
             if sys::has_window_size_changed() {
                 self.update_window_size()?;
@@ -585,9 +644,10 @@ impl Editor {
         // digits of the last line number. This is equal to the number of times
         // we can divide this number by ten, computed below using `successors`.
         let n_digits = scsr(Some(self.rows.len()), |u| Some(u / 10).filter(|u| *u > 0)).count();
-        let show_line_num = self.config.show_line_num && n_digits + 2 < self.window_width / 4;
+        let editor_width = self.window_width - self.output_width();
+        let show_line_num = self.config.show_line_num && n_digits + 2 < editor_width / 4;
         self.ln_pad = if show_line_num { n_digits + 2 } else { 0 };
-        self.screen_cols = self.window_width.saturating_sub(self.ln_pad);
+        self.screen_cols = editor_width.saturating_sub(self.ln_pad);
     }
 
     /// Update a row, given its index. If `ignore_following_rows` is `false` and
@@ -847,13 +907,15 @@ impl Editor {
     /// Save to a file after obtaining the file path from the prompt. If
     /// successful, the `file_name` attribute of the editor will be set and
     /// syntax highlighting will be updated.
-    fn save_as(&mut self, file_name: String) {
+    fn save_as(&mut self, file_name: String) -> bool {
         if self.save_and_handle_io_errors(&file_name) {
             // If save was successful
             self.syntax = SyntaxConf::find(&file_name, &sys::data_dirs());
             self.file_name = Some(file_name);
             self.update_all_rows();
+            return true;
         }
+        false
     }
 
     /// Draw the left part of the screen: line numbers and vertical bar.
@@ -879,6 +941,22 @@ impl Editor {
         let row_it = self.rows.iter().map(Some).chain(repeat(None)).enumerate();
         for (i, row) in row_it.skip(self.cursor.roff).take(self.screen_rows) {
             buffer.push_str(CLEAR_LINE_RIGHT_OF_CURSOR);
+            if let Some(output) = &self.output
+                && self.output_width() > 0
+            {
+                let y = i - self.cursor.roff;
+                let title = format!("Output | {}", output.status);
+                let start = output.lines.len().saturating_sub(self.screen_rows.saturating_sub(1));
+                let text = if y == 0 {
+                    &title
+                } else {
+                    output.lines.get(start + y - 1).map_or("", String::as_str)
+                };
+                let width = self.output_width() - 1;
+                let used = draw_pane_text(buffer, text, width);
+                buffer.extend(iter::repeat_n(' ', width - used));
+                buffer.push('|');
+            }
             if let Some(row) = row {
                 // Draw a row of text
                 self.draw_left_padding(buffer, i + 1);
@@ -887,7 +965,12 @@ impl Editor {
                     && let Some(ghost) = &self.ghost_text
                 {
                     let first_line = ghost.lines().next().unwrap_or("");
-                    push_colored(buffer, "\x1b[38;5;244m", first_line, self.use_color);
+                    let mut clipped = String::new();
+                    let remaining = self.screen_cols.saturating_sub(
+                        row.cx2rx.last().copied().unwrap_or(0).saturating_sub(self.cursor.coff),
+                    );
+                    draw_pane_text(&mut clipped, first_line, remaining);
+                    push_colored(buffer, "\x1b[38;5;244m", &clipped, self.use_color);
                 }
             } else {
                 // Draw an empty row
@@ -905,9 +988,12 @@ impl Editor {
     fn draw_status_bar(&self, buffer: &mut String) {
         // Left part of the status bar
         let modified = if self.dirty { " (modified)" } else { "" };
-        let mut left =
-            format!("{:.30}{modified}", self.file_name.as_deref().unwrap_or("[No Name]"));
-        left.truncate(self.window_width);
+        let mut left = String::new();
+        let used = draw_pane_text(
+            &mut left,
+            &format!("{:.30}{modified}", self.file_name.as_deref().unwrap_or("[No Name]")),
+            self.window_width,
+        );
 
         // Right part of the status bar
         let size = format_size(self.n_bytes + self.rows.len().saturating_sub(1) as u64);
@@ -915,8 +1001,13 @@ impl Editor {
             format!("{} | {size} | {}:{}", self.syntax.name, self.cursor.y + 1, self.rx() + 1);
 
         // Draw
-        let rw = self.window_width.saturating_sub(left.len());
-        push_colored(buffer, WBG, &format!("{left}{right:>rw$.rw$}\r\n"), self.use_color);
+        let rw = self.window_width.saturating_sub(used);
+        let mut clipped = String::new();
+        let right_width = draw_pane_text(&mut clipped, &right, rw);
+        left.extend(iter::repeat_n(' ', rw - right_width));
+        left.push_str(&clipped);
+        left.push_str("\r\n");
+        push_colored(buffer, WBG, &left, self.use_color);
     }
 
     /// Draw the message bar on the terminal, by adding characters to the
@@ -925,7 +1016,7 @@ impl Editor {
         buffer.push_str(CLEAR_LINE_RIGHT_OF_CURSOR);
         let msg_duration = self.config.message_dur;
         if let Some(sm) = self.status_msg.as_ref().filter(|sm| sm.time.elapsed() < msg_duration) {
-            buffer.push_str(&sm.msg[..sm.msg.len().min(self.window_width)]);
+            draw_pane_text(buffer, &sm.msg, self.window_width);
         }
     }
 
@@ -940,7 +1031,10 @@ impl Editor {
         let (cursor_x, cursor_y) = if self.prompt_mode.is_none() {
             // If not in prompt mode, position the cursor according to the `cursor`
             // attributes.
-            (self.rx() - self.cursor.coff + 1 + self.ln_pad, self.cursor.y - self.cursor.roff + 1)
+            (
+                self.rx() - self.cursor.coff + 1 + self.ln_pad + self.output_width(),
+                self.cursor.y - self.cursor.roff + 1,
+            )
         } else {
             // If in prompt mode, position the cursor on the prompt line at the end of the
             // line.
@@ -993,11 +1087,18 @@ impl Editor {
                 set_status!(self, "Press Ctrl+Q {0} more time{1:.2$} to quit.", r, "s", r - 1);
                 reset_quit_times = false;
             }
-            Key::Char(SAVE) if let Some(file_name) = self.file_name.take() => {
-                self.save_and_handle_io_errors(&file_name);
+            Key::Char(RUN) if self.output.as_ref().is_some_and(Output::is_running) => {
+                set_status!(self, "A command is already running");
+            }
+            Key::Char(SAVE | RUN) if let Some(file_name) = self.file_name.take() => {
+                let saved = self.save_and_handle_io_errors(&file_name);
                 self.file_name = Some(file_name);
+                if saved && matches!(key, Key::Char(RUN)) {
+                    self.run_saved_file();
+                }
             }
             Key::Char(SAVE) => prompt_mode = Some(PromptMode::Save(String::new())),
+            Key::Char(RUN) => prompt_mode = Some(PromptMode::SaveAndRun(String::new())),
             Key::Char(FIND) => {
                 prompt_mode = Some(PromptMode::Find(String::new(), self.cursor.clone(), None));
             }
@@ -1140,6 +1241,8 @@ pub fn run<I: BufRead>(file_name: Option<&str>, input: &mut I) -> Result<(), Err
 enum PromptMode {
     /// Save(prompt buffer)
     Save(String),
+    /// SaveAndRun(prompt buffer)
+    SaveAndRun(String),
     /// Find(prompt buffer, saved cursor state, last match)
     Find(String, CursorState, Option<usize>),
     /// GoTo(prompt buffer)
@@ -1155,6 +1258,7 @@ impl PromptMode {
     fn status_msg(&self) -> String {
         match self {
             Self::Save(buffer) => format!("Save as: {buffer}"),
+            Self::SaveAndRun(buffer) => format!("Save and run as: {buffer}"),
             Self::Find(buffer, ..) => format!("Search (Use ESC/Arrows/Enter): {buffer}"),
             Self::GoTo(buffer) => format!("Enter line number[:column number]: {buffer}"),
             Self::Execute(buffer) => format!("Command to execute: {buffer}"),
@@ -1168,7 +1272,18 @@ impl PromptMode {
             Self::Save(b) => match process_prompt_keypress(b, key) {
                 PromptState::Active(b) => return Some(Self::Save(b)),
                 PromptState::Cancelled => set_status!(ed, "Save aborted"),
-                PromptState::Completed(file_name) => ed.save_as(file_name),
+                PromptState::Completed(file_name) => {
+                    ed.save_as(file_name);
+                }
+            },
+            Self::SaveAndRun(b) => match process_prompt_keypress(b, key) {
+                PromptState::Active(b) => return Some(Self::SaveAndRun(b)),
+                PromptState::Cancelled => set_status!(ed, "Save and run aborted"),
+                PromptState::Completed(file_name) => {
+                    if ed.save_as(file_name) {
+                        ed.run_saved_file();
+                    }
+                }
             },
             Self::Find(b, saved_cursor, last_match) => {
                 if let Some(row_idx) = last_match {
@@ -1218,17 +1333,7 @@ impl PromptMode {
                 PromptState::Active(b) => return Some(Self::Execute(b)),
                 PromptState::Cancelled => (),
                 PromptState::Completed(b) => {
-                    let mut args = b.split_whitespace();
-                    match Command::new(args.next().unwrap_or_default()).args(args).output() {
-                        Ok(out) if !out.status.success() => {
-                            set_status!(ed, "{}", String::from_utf8_lossy(&out.stderr).trim_end());
-                        }
-                        Ok(out) => out.stdout.into_iter().for_each(|c| match c {
-                            b'\n' => ed.insert_new_line(),
-                            c => ed.insert_byte(c),
-                        }),
-                        Err(e) => set_status!(ed, "{e}"),
-                    }
+                    ed.start_output(Command::new("bash").args(["-c", &b]));
                 }
             },
         }
@@ -1943,6 +2048,78 @@ mod tests {
             normalize_ghost_completion(&long).map(|text| text.len()),
             Some(MAX_GHOST_COMPLETION_CHARS)
         );
+    }
+
+    #[test]
+    fn output_pane_tails_on_the_left_and_resizes() -> Result<(), Error> {
+        let mut output = Output::default();
+        output.lines.extend(["old".into(), "stdout".into(), "stderr".into()]);
+        let mut editor = Editor {
+            window_width: 40,
+            screen_rows: 3,
+            use_color: false,
+            output: Some(output),
+            ..Default::default()
+        };
+        editor.insert_str("spec text\nsecond line");
+        let mut rendered = String::new();
+        editor.draw_rows(&mut rendered)?;
+        assert!(rendered.contains("Output | Idle      |1 \u{2502}spec text"));
+        assert!(rendered.contains("stdout             |2 \u{2502}second line"));
+        assert!(rendered.contains("stderr             |"));
+        assert!(!rendered.contains("old"));
+        assert_eq!(editor.screen_cols, 17);
+
+        editor.window_width = 10;
+        editor.update_screen_cols();
+        rendered.clear();
+        editor.draw_rows(&mut rendered)?;
+        assert_eq!(editor.output_width(), 0);
+        assert_eq!(editor.screen_cols, 10);
+        assert!(!rendered.contains("stdout"));
+        assert!(rendered.contains("spec text"));
+
+        editor.window_width = 80;
+        editor.update_screen_cols();
+        assert_eq!(editor.output_width(), 40);
+        assert_eq!(editor.screen_cols, 37);
+        Ok(())
+    }
+
+    #[test]
+    fn pane_text_clips_whole_emoji_sequences() {
+        for text in ["\u{2764}\u{fe0f}", "\u{1f469}\u{200d}\u{1f4bb}"] {
+            let mut rendered = String::new();
+            assert_eq!(draw_pane_text(&mut rendered, text, 1), 0);
+            assert!(rendered.is_empty());
+            assert_eq!(draw_pane_text(&mut rendered, &text.repeat(40), 39), 38);
+            assert_eq!(rendered, text.repeat(19));
+        }
+    }
+
+    #[test]
+    fn run_prompts_instead_of_deleting_and_ghost_text_stays_in_pane() -> Result<(), Error> {
+        let mut editor = Editor {
+            window_width: 40,
+            screen_rows: 1,
+            use_color: false,
+            output: Some(Output::default()),
+            ..Default::default()
+        };
+        editor.insert_str("spec");
+        assert_eq!(
+            editor.process_keypress(&Key::Char(RUN)),
+            (false, Some(PromptMode::SaveAndRun(String::new())))
+        );
+        assert_row_chars_equal(&editor, &[b"spec"]);
+        editor.ghost_text = Some("x".repeat(100));
+        let mut rendered = String::new();
+        editor.draw_rows(&mut rendered)?;
+        assert!(rendered.contains("specxxxxxxxxxxxxx\r\n"));
+        assert!(!rendered.contains("xxxxxxxxxxxxxx"));
+        editor.process_keypress(&Key::Char(REMOVE_LINE));
+        assert_row_chars_equal(&editor, &[b""]);
+        Ok(())
     }
 
     #[test]

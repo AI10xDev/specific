@@ -74,7 +74,7 @@ spec() {
     return
   fi
 
-  local editor
+  local editor runner
   editor="$(_specific_home)/editor/specific-editor"
   if [[ ! -x "$editor" ]]; then
     editor=$(command -v specific-editor 2>/dev/null) || {
@@ -82,7 +82,12 @@ spec() {
       return 1
     }
   fi
-  KIBI_SAVE_COPY_DIR="${SPECIFIC_SPECS_DIR:-$HOME/specs}" \
+  runner=${KIBI_RUN_COMMAND:-}
+  if [[ -z "$runner" ]]; then
+    runner=$(_specific_command specific-run-build) || return
+  fi
+  KIBI_RUN_COMMAND="$runner" \
+    KIBI_SAVE_COPY_DIR="${SPECIFIC_SPECS_DIR:-$HOME/specs}" \
     KIBI_SAVE_HISTORY_FILE="$history_file" \
     XDG_DATA_DIRS="$(_specific_home)/editor/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}" \
     "$editor" "$@"

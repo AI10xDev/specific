@@ -38,9 +38,12 @@
    spec first-feature.md
    ```
 
-   Save with `Ctrl-S`, then quit with `Ctrl-Q`.
+   Press `Ctrl+R` to save and build without leaving the editor. An unnamed
+   buffer first prompts with Save As. The noninteractive build streams output
+   to the left pane, not into your spec. Or save only with `Ctrl-S`.
 
-6. Send that file to OpenCode's build agent.
+6. For the portable foreground workflow, quit with `Ctrl-Q`, then send the file
+   to OpenCode's build agent from your shell. Quitting stops any active editor job.
 
    ```bash
    spec build first-feature.md
@@ -64,3 +67,16 @@ Azure-backed inline completion is optional. Leave `KIBI_ENV_FILE` and all
 `AZURE_OPENAI_*` variables unset to omit it. Core editing and delegation still
 work. See the [complete configuration](README.md#configuration) and
 [troubleshooting guide](README.md#troubleshooting).
+
+## Editor Shortcuts
+
+`Ctrl+E` prompts for an arbitrary shell command, executes it with `bash -c`,
+and streams output to the live left pane without inserting it into the buffer.
+`Ctrl+K` removes a line, replacing the old `Ctrl+R` binding. The editor prevents
+overlapping runs. Output auto-tails a bounded number of retained lines; older
+output is discarded and manual output scrolling is not available.
+
+The shell integration supplies `KIBI_RUN_COMMAND` for `Ctrl+R`. To override it,
+set it to an executable path, not a shell command string. The saved filename is
+passed as one argument, including when paths contain spaces. This does not
+change `spec build`; see [Configuration](docs/CONFIGURATION.md#editor-commands).

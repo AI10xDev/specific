@@ -49,6 +49,7 @@ plan_goal [spec-directory]
 - Terminal editing with syntax highlighting and short, inline optional completion.
 - Canonical save history and configurable basename mirror copies.
 - Explicit-file or latest-saved build delegation.
+- Save-and-build from the editor with live output in a left pane.
 - Deterministically sorted, recursive plan selection.
 - Safe handling of spaces and special characters in shell paths.
 - OpenCode discovery through an override, `opencode`, or `opencode-source`.
@@ -110,6 +111,29 @@ plan_goal "$HOME/my plans"   # select from an explicit directory
 `run_goal <spec-file>` remains available as a compatibility function and calls
 the portable build runner.
 
+### Editor Commands
+
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl+R` | Save and build the current spec; Save As prompts for an unnamed buffer |
+| `Ctrl+E` | Prompt for an arbitrary shell command and run it with `bash -c` |
+| `Ctrl+K` | Remove the current line (formerly `Ctrl+R`) |
+| `Ctrl+Q` | Quit the editor and stop any active job |
+
+Builds and shell commands stream live output to the left pane, never into the
+text buffer. The pane auto-tails a bounded number of lines and discards older
+output; manual output scrolling is not available. The editor prevents overlapping runs.
+`Ctrl+R` builds are noninteractive and start only after a successful save.
+
+`spec` supplies `KIBI_RUN_COMMAND` as the resolved path to `specific-run-build`,
+unless you provide a nonempty override. It is an **executable path, not a shell
+command string**; the editor passes the saved filename as a single argument.
+Paths containing spaces are supported. Use an executable wrapper for custom
+arguments or build logic. `Ctrl+E`, by contrast, accepts shell syntax.
+
+`spec build [spec-file]` and `run_goal` retain their portable foreground behavior
+and do not use `KIBI_RUN_COMMAND`.
+
 ### Saves And History
 
 `Ctrl-S` first saves the original file. After that succeeds, the editor:
@@ -148,6 +172,7 @@ project. The runner does not change those settings.
 | `SPECIFIC_STATE_DIR` | State and history directory | `${XDG_STATE_HOME:-$HOME/.local/state}/specific` |
 | `SPECIFIC_PLAN_DIR` | Default plan source directory | `$HOME/specing` |
 | `SPECIFIC_OPENCODE_BIN` | Explicit OpenCode executable | auto-detected |
+| `KIBI_RUN_COMMAND` | Editor build executable path, not a shell string | resolved `specific-run-build` |
 | `KIBI_ENV_FILE` | Optional completion environment file | nearest `.env` when present |
 | `AZURE_OPENAI_ENDPOINT` | Optional completion endpoint | unset |
 | `AZURE_OPENAI_API_KEY` | Optional completion credential | unset |

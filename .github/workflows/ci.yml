@@ -20,5 +20,9 @@ jobs:
       - run: cargo fmt --check --manifest-path editor/Cargo.toml
       - run: cargo clippy --manifest-path editor/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path editor/Cargo.toml
+      - name: Editor PTY smoke test
+        run: |
+          cargo build --manifest-path editor/Cargo.toml
+          python3 tests/editor-pty.py
       - run: bats tests
       - run: shellcheck install.sh shell/specific.sh bin/*
