@@ -298,9 +298,28 @@ is passed as a single argument. The `spec` shell integration resolves
 `specific-run-build` by default and preserves a nonempty external override.
 Use an executable wrapper for custom build arguments.
 
+The local `spec` alias enables `KIBI_SPEC_SESSION=1` only with its default
+`run-spec.sh` launcher. In this mode the first `Ctrl+R` starts a persistent
+build-agent session; later presses save and publish the complete spec to that
+same session, including while it is busy. Updates do not restart the process or
+clear the output pane. Failed saves do not submit anything. The session waits
+for more input when idle and survives editor exit, without inventing new work.
+Custom launchers remain one-shot unless explicitly configured for this inbox
+protocol. Each editor owns a separate private inbox under
+`${XDG_STATE_HOME:-$HOME/.local/state}/spec/sessions`; the runner logs its path.
+To stop a detached session, create `STOP` in that inbox. Opening a new editor
+creates a separate session, not an automatic reattachment to a previous one.
+
 `Ctrl+E` prompts for arbitrary shell syntax. Both commands show live output in
 the left pane, never inserting it into the buffer. The editor prevents
-overlapping runs, and quitting stops the active job. The pane auto-tails a
+overlapping runs (persistent spec updates are not new runs). Jobs launch with
+`nohup` and keep running after quitting or a
+terminal hangup. Their combined stdout/stderr appends to `<filename>.out` in
+the launch directory (for example, `plan.md.out`), or `untitled.out` for an
+unnamed buffer. New logs are private (mode `0600`); the status bar shows the
+path at launch. The pane displays only new output, while previous runs remain
+in the log. Logs are not size-limited or removed by the editor.
+The pane auto-tails a
 bounded number of retained lines and discards older output; manual output
 scrolling is not available. See [specific configuration](../docs/CONFIGURATION.md#editor-commands).
 

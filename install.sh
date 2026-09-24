@@ -35,7 +35,7 @@ while (( $# > 0 )); do
   esac
 done
 
-for dependency in bash git cargo rustc python3; do
+for dependency in bash git cargo rustc python3 nohup; do
   if ! command -v -- "$dependency" >/dev/null 2>&1; then
     printf 'Required dependency is not available: %s\n' "$dependency" >&2
     exit 1

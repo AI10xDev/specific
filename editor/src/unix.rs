@@ -9,7 +9,7 @@
 #![expect(unsafe_code)]
 
 use std::io::{self, BufRead};
-use std::os::{fd::AsRawFd, unix::process::CommandExt};
+use std::os::unix::process::CommandExt;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
 // On UNIX systems, termios represents the terminal mode.
@@ -37,46 +37,14 @@ pub fn detach_job(command: &mut std::process::Command) {
     }
 }
 
-pub fn nonblocking_pipe(reader: &io::PipeReader) -> io::Result<()> {
-    let flags = unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_GETFL) };
-    cerr(flags)?;
-    cerr(unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) })
-}
-
-/// Snapshot the finite backlog so escaped writers cannot extend the final drain.
-pub fn pipe_pending(reader: &io::PipeReader) -> io::Result<usize> {
-    let mut bytes: c_int = 0;
-    cerr(unsafe { libc::ioctl(reader.as_raw_fd(), libc::FIONREAD, &raw mut bytes) })?;
-    usize::try_from(bytes).map_err(io::Error::other)
-}
-
 /// Kill a shell job, including descendants still in its dedicated process group.
+#[cfg(test)]
 pub fn kill_process_group(id: u32) -> io::Result<()> {
     let id = c_int::try_from(id).map_err(io::Error::other)?;
     if id <= 0 {
         return Err(io::Error::other("invalid process group"));
     }
     cerr(unsafe { libc::kill(-id, libc::SIGKILL) })
-}
-
-/// Check exit without releasing the PID until the job's remaining descendants are killed.
-pub fn try_wait_job(
-    child: &mut std::process::Child,
-) -> io::Result<Option<std::process::ExitStatus>> {
-    let mut info = std::mem::MaybeUninit::<siginfo_t>::zeroed();
-    cerr(unsafe {
-        libc::waitid(
-            libc::P_PID,
-            child.id(),
-            info.as_mut_ptr(),
-            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-        )
-    })?;
-    if unsafe { info.assume_init().si_pid() } == 0 {
-        return Ok(None);
-    }
-    drop(kill_process_group(child.id()));
-    child.try_wait()
 }
 
 /// Return the current window size as (rows, columns).
@@ -201,11 +169,12 @@ mod tests {
         if std::env::var_os("KIBI_OUTPUT_PTY_TEST").is_some() {
             let tty = File::open("/dev/tty")?;
             drop(tty);
+            let directory = tempfile::tempdir()?;
             let mut output = crate::output::Output::default();
             output.start(Command::new("sh").args([
                 "-c",
                 "if ( : </dev/tty ) 2>/dev/null; then printf inherited; else printf detached; fi",
-            ]))?;
+            ]), directory.path().join("output.log"))?;
             let deadline = Instant::now() + Duration::from_secs(5);
             while output.is_running() {
                 output.poll();

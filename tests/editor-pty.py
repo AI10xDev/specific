@@ -21,14 +21,16 @@ import traceback
 
 
 class Terminal:
-    def __init__(self, binary, root, name, color=False):
+    def __init__(self, binary, root, name, color=False, persistent=False):
         self.root, self.pending, self.screen, self.trace = root, b"", "", b""
         self.fd, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
         # No inherited credentials/config, and python3 cannot start the completion agent.
         env = dict(HOME=str(root), XDG_CONFIG_HOME=str(root), XDG_CONFIG_DIRS=str(root),
                    XDG_DATA_HOME=str(root), XDG_DATA_DIRS=str(root), TERM="xterm", NO_COLOR="" if color else "1",
-                   PATH=str(root / "bin"), KIBI_RUN_COMMAND=str(root / "runner ; literal"))
+                   PATH=str(root / "bin"), TMPDIR=str(root),
+                    KIBI_RUN_COMMAND=str(root / "runner ; literal"),
+                    KIBI_SPEC_SESSION="1" if persistent else "0")
         try:
             self.proc = subprocess.Popen([str(binary)] + ([name] if name else []), cwd=root,
                                          env=env, stdin=slave, stdout=slave, stderr=slave,
@@ -97,11 +99,12 @@ class Terminal:
 
 
 @contextlib.contextmanager
-def editor(binary, name=None, content="", color=False):
+def editor(binary, name=None, content="", color=False, persistent=False):
     with tempfile.TemporaryDirectory(prefix="kibi-pty-") as directory:
         root = Path(directory).resolve()
         (root / "bin").mkdir()
         (root / "bin/bash").symlink_to(shutil.which("bash"))
+        (root / "bin/nohup").symlink_to(shutil.which("nohup"))
         stub = root / "bin/python3"
         stub.write_text("#!/bin/sh\nexit 0\n")
         stub.chmod(0o755)
@@ -113,7 +116,17 @@ with (root / "calls").open("a") as log:
 print("LIVE-OUT", flush=True)
 print("LIVE-ERR", file=sys.stderr, flush=True)
 deadline = time.monotonic() + 20
+inbox = pathlib.Path(os.environ["SPEC_SESSION_DIR"]) if os.environ.get("SPEC_SESSION_DIR") else None
+seen = set()
 while not (root / "release").exists():
+    if inbox:
+        for message in sorted(inbox.glob("*.json")):
+            if message.name in seen:
+                continue
+            seen.add(message.name)
+            with (root / "updates").open("a") as log:
+                log.write(json.dumps(json.loads(message.read_text())) + "\\n")
+            print("UPDATE-" + str(len(seen)), flush=True)
     if time.monotonic() > deadline:
         sys.exit(99)
     select.select([], [], [], 0.02)
@@ -121,8 +134,9 @@ print("FINISHED", flush=True)
 ''')
         runner.chmod(0o755)
         if name:
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
             (root / name).write_text(content)
-        terminal = Terminal(binary, root, name, color=color)
+        terminal = Terminal(binary, root, name, color=color, persistent=persistent)
         try:
             terminal.wait("Output | Idle")
             yield terminal
@@ -155,6 +169,10 @@ def named(binary):
         t.send("\x05printf 'SHELL-%s\\n' OUT; printf 'SHELL-%s\\n' ERR >&2; exit 7\r")
         t.wait("exit status: 7")
         assert "\r\nSHELL-OUT" in t.screen and "\r\nSHELL-ERR" in t.screen
+        assert (t.root / (name + ".out")).read_text() == (
+            "LIVE-OUT\nLIVE-ERR\nFINISHED\nSHELL-OUT\nSHELL-ERR\n"
+        ), "build and shell output must append to the same log"
+        assert "LIVE-OUT" not in t.screen, "pane retained output from the previous run"
         t.send("\x13")
         t.wait("written to")
         assert (t.root / name).read_text() == "latest+editkeep\n", "shell output entered document"
@@ -179,6 +197,57 @@ def unnamed(binary):
         (t.root / "release").touch()
         t.wait("Exited:")
         assert len(t.calls()) == 1
+        assert (t.root / "saved spec.txt.out").read_text() == "LIVE-OUT\nLIVE-ERR\nFINISHED\n"
+
+
+def persistent_updates(binary):
+    with editor(binary, "spec", "original\n", persistent=True) as t:
+        t.send("\x12")
+        t.wait("UPDATE-1")
+        pid = t.calls()[0][0]
+        t.send("changed\x12")
+        t.wait("UPDATE-2")
+        assert (t.root / "spec").read_text() == "changedoriginal\n"
+        t.send(" again\x12\x12")
+        t.wait("UPDATE-4")
+        updates = [json.loads(line)["text"] for line in (t.root / "updates").read_text().splitlines()]
+        assert updates == ["original\n", "changedoriginal\n", "changed againoriginal\n", "changed againoriginal\n"]
+        assert len(t.calls()) == 1 and t.calls()[0][0] == pid, "Ctrl+R restarted the session"
+        assert "LIVE-OUT" in t.screen, "update cleared the output pane"
+        t.send("\x05printf forbidden > forbidden\r")
+        t.wait("already running")
+        assert not (t.root / "forbidden").exists()
+        (t.root / "spec").unlink()
+        (t.root / "spec").mkdir()
+        t.send("unsaved\x12")
+        t.wait("Can't save!")
+        time.sleep(0.1)
+        assert len((t.root / "updates").read_text().splitlines()) == 4
+        inboxes = list((t.root / ".local/state/spec/sessions").iterdir())
+        assert len(inboxes) == 1 and inboxes[0].stat().st_mode & 0o777 == 0o700
+        t.send("\x11" * 4)
+        t.proc.wait(timeout=2)
+        os.kill(pid, 0)
+        (t.root / "release").touch()
+
+
+def log_destination(binary):
+    with editor(binary, "nested/plan.md", "spec") as t:
+        t.send("\x12")
+        t.wait("LIVE-ERR")
+        assert (t.root / "plan.md.out").read_text() == "LIVE-OUT\nLIVE-ERR\n"
+        assert not (t.root / "nested/plan.md.out").exists()
+        (t.root / "release").touch()
+        t.wait("Exited:")
+    with editor(binary) as t:
+        t.send("\x05printf unnamed; printf error >&2\r")
+        t.wait("Exited:")
+        assert (t.root / "untitled.out").read_text() == "unnamederror"
+    with editor(binary, "spec", "original") as t:
+        (t.root / "spec.out").mkdir()
+        t.send("\x12")
+        t.wait("Can't run command:")
+        assert not t.calls(), "runner started despite log open failure"
 
 
 def save_failure(binary):
@@ -205,11 +274,35 @@ def unicode_save(binary):
         t.wait("written to")
 
 
+def background_survives_exit(binary):
+    for keys, hangup in (("\x12", False), ("\x12", True),
+                         ("\x05exec './runner ; literal' spec\r", False),
+                         ("\x05exec './runner ; literal' spec\r", True)):
+        with editor(binary, "spec", "background") as t:
+            t.send(keys)
+            t.wait("LIVE-ERR")
+            pid = t.calls()[0][0]
+            if hangup:
+                t.proc.send_signal(signal.SIGHUP)
+            else:
+                t.send("\x11")
+            t.proc.wait(timeout=2)
+            os.killpg(pid, signal.SIGHUP)
+            (t.root / "release").touch()
+            log = t.root / "spec.out"
+            deadline = time.monotonic() + 5
+            while "FINISHED" not in log.read_text():
+                assert time.monotonic() < deadline, "background output stopped after editor exit"
+                time.sleep(0.02)
+            assert log.stat().st_mode & 0o777 == 0o600, "log must be private"
+
+
 if __name__ == "__main__":
     binary = Path(sys.argv[1] if len(sys.argv) > 1 else
                   Path(__file__).resolve().parents[1] / "editor/target/debug/kibi").resolve()
     failures = 0
-    for test in (named, unnamed, save_failure, unicode_resize, unicode_save):
+    for test in (named, unnamed, persistent_updates, log_destination, save_failure, unicode_resize, unicode_save,
+                 background_survives_exit):
         try:
             test(binary)
             print(f"PASS {test.__name__}", flush=True)

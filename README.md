@@ -64,6 +64,7 @@ shell workflow are not designed for native Windows shells.
 ## Prerequisites
 
 - Bash 4+
+- `nohup` (normally provided by coreutils)
 - Git
 - Rust and Cargo compatible with the `rust-version` in `editor/Cargo.toml`
 - Python 3, used by optional completion and portable plan-file discovery
@@ -118,12 +119,19 @@ the portable build runner.
 | `Ctrl+R` | Save and build the current spec; Save As prompts for an unnamed buffer |
 | `Ctrl+E` | Prompt for an arbitrary shell command and run it with `bash -c` |
 | `Ctrl+K` | Remove the current line (formerly `Ctrl+R`) |
-| `Ctrl+Q` | Quit the editor and stop any active job |
+| `Ctrl+Q` | Quit the editor, leaving background jobs running |
 
 Builds and shell commands stream live output to the left pane, never into the
 text buffer. The pane auto-tails a bounded number of lines and discards older
 output; manual output scrolling is not available. The editor prevents overlapping runs.
 `Ctrl+R` builds are noninteractive and start only after a successful save.
+Both shortcuts launch jobs with `nohup` in a separate session, with stdin closed.
+Combined stdout/stderr appends to `<filename>.out` in the directory where you
+launched `spec`, even when the spec lives elsewhere (for example, `plan.md.out`).
+An unnamed buffer uses `untitled.out`. New logs are private (mode `0600`), and
+the status bar shows the path at launch. The pane follows only the new run's
+output. Jobs and their logs survive editor exit or terminal hangup; logs are
+not automatically removed or size-limited by the editor.
 
 `spec` supplies `KIBI_RUN_COMMAND` as the resolved path to `specific-run-build`,
 unless you provide a nonempty override. It is an **executable path, not a shell

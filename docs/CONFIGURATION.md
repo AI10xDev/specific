@@ -52,14 +52,20 @@ shell syntax such as pipes and redirections. `Ctrl+K` removes a line, replacing
 the old `Ctrl+R` binding.
 
 The editor prevents overlapping runs: wait for the active build or command to
-finish before starting another. Quitting the editor stops its active job.
+finish before starting another. Both shortcuts launch with `nohup`; quitting
+the editor or closing its terminal leaves the active job running.
 The output pane follows the newest output, retaining up to 1,000 lines (8 KiB
 per line) and discarding older output. Manual output scrolling is not available.
 Below 20 terminal columns, the pane is hidden to leave room for editing; it
 returns when the terminal is widened. ANSI terminal controls are stripped.
-On Unix, jobs run in a separate session and their process group is stopped on
-exit. Explicitly detached processes are outside that group and are not managed
-by the editor.
+On Unix, jobs run in a separate session with stdin closed. Combined stdout/stderr
+appends to `<filename>.out` in the editor's launch directory, using the spec's
+basename including its extension (for example, `/other/plan.md` uses `./plan.md.out`).
+An unnamed buffer uses `untitled.out`. New logs have mode `0600`; existing logs
+retain their permissions. The status bar displays the path at launch. The pane
+follows only the new run's output until the launched command exits. Descendants
+can continue writing to the log afterward. Logs remain after editor exit and
+are not size-limited or automatically removed by the editor.
 
 ## OpenCode Discovery
 

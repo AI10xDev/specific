@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+
 use std::{
     collections::VecDeque,
-    io::{self, Read},
+    fs::{File, OpenOptions},
+    io::{self, Read, Seek, SeekFrom},
+    path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{
         Arc,
@@ -36,6 +41,7 @@ pub struct Output {
     pub(crate) lines: VecDeque<String>,
     pub(crate) markdown: Markdown,
     pub(crate) status: String,
+    pub(crate) log_path: PathBuf,
     child: Option<Child>,
     receiver: Option<Receiver<io::Result<Vec<u8>>>>,
     reaper: Option<Sender<Child>>,
@@ -51,6 +57,7 @@ impl Default for Output {
             lines: VecDeque::new(),
             markdown: Markdown::default(),
             status: "Idle".into(),
+            log_path: PathBuf::new(),
             child: None,
             receiver: None,
             reaper: None,
@@ -67,12 +74,17 @@ impl Output {
         self.child.is_some() || self.receiver.is_some()
     }
 
-    /// Replace the previous job, then read the new job's output on a bounded worker.
-    pub(crate) fn start(&mut self, command: &mut Command) -> io::Result<()> {
+    /// Follow a job's log without tying its lifetime or writes to the editor.
+    pub(crate) fn start(&mut self, command: &mut Command, log_path: PathBuf) -> io::Result<()> {
         *self = Self::default();
-        let (mut reader, writer) = io::pipe()?;
+        self.log_path = log_path;
+        let mut options = OpenOptions::new();
+        options.append(true).create(true);
         #[cfg(unix)]
-        crate::sys::nonblocking_pipe(&reader)?;
+        options.mode(0o600);
+        let writer = options.open(&self.log_path)?;
+        let mut reader = File::open(&self.log_path)?;
+        let mut consumed = reader.seek(SeekFrom::End(0))?;
         let stderr = writer.try_clone()?;
         let (sender, receiver) = mpsc::sync_channel(CHANNEL_CHUNKS);
         let (cleanup, children) = mpsc::channel::<Child>();
@@ -80,46 +92,42 @@ impl Output {
         // Start the reaper before the child: Drop never needs to create a thread or wait.
         thread::Builder::new().name("shell-output".into()).spawn(move || {
             let mut buffer = [0; CHUNK_BYTES];
-            #[cfg(unix)]
             let mut remaining = None;
             loop {
-                #[cfg(unix)]
                 if remaining.is_none() && stopped.load(Relaxed) {
-                    match crate::sys::pipe_pending(&reader) {
-                        Ok(bytes) => remaining = Some(bytes),
+                    // Descendants may keep appending after the shell exits. Drain a finite snapshot.
+                    match reader.metadata() {
+                        Ok(metadata) => remaining = Some(metadata.len().saturating_sub(consumed)),
                         Err(error) => {
                             drop(sender.send(Err(error)));
                             break;
                         }
                     }
                 }
-                #[cfg(unix)]
-                let size = remaining.unwrap_or(CHUNK_BYTES).min(CHUNK_BYTES);
-                #[cfg(not(unix))]
-                let size = CHUNK_BYTES;
+                let size = remaining
+                    .and_then(|bytes| usize::try_from(bytes).ok())
+                    .unwrap_or(CHUNK_BYTES)
+                    .min(CHUNK_BYTES);
                 if size == 0 {
                     break;
                 }
                 match reader.read(&mut buffer[..size]) {
-                    Ok(0) => break,
+                    Ok(0) => {
+                        if remaining.is_some() {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(5));
+                    }
                     Ok(size) => {
-                        #[cfg(unix)]
+                        consumed += size as u64;
                         if let Some(remaining) = &mut remaining {
-                            *remaining -= size;
+                            *remaining -= size as u64;
                         }
                         if sender.send(Ok(buffer[..size].to_vec())).is_err() {
                             break;
                         }
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        #[cfg(not(unix))]
-                        if stopped.load(Relaxed) {
-                            break;
-                        }
-                        // Recheck the backlog next iteration: exit can race with EAGAIN.
-                        thread::sleep(Duration::from_millis(5));
-                    }
                     Err(error) => {
                         drop(sender.send(Err(error)));
                         break;
@@ -138,7 +146,7 @@ impl Output {
         #[cfg(unix)]
         crate::sys::detach_job(command);
         let child = command.spawn();
-        // Command retains its pipe writers after spawning; close them so EOF can arrive.
+        // Only the child should retain the log writers.
         command.stdout(Stdio::null()).stderr(Stdio::null());
         let child = child.inspect_err(|_| {
             *self = Self::default();
@@ -172,17 +180,17 @@ impl Output {
             }
         }
         if let Some(child) = &mut self.child {
-            #[cfg(unix)]
-            let result = crate::sys::try_wait_job(child);
-            #[cfg(not(unix))]
             let result = child.try_wait();
             match result {
                 Ok(Some(status)) => {
                     self.stopped.store(true, Relaxed);
                     self.reaper = None;
-                    self.child = None;
-                    self.status = format!("Exited: {status}");
-                    changed = true;
+                    // Publish completion only once the pane can accept the next job.
+                    if self.receiver.is_none() {
+                        self.child = None;
+                        self.status = format!("Exited: {status}");
+                        changed = true;
+                    }
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -298,10 +306,8 @@ impl Drop for Output {
         // Disconnect first: a worker blocked on the bounded channel must be able to exit.
         self.receiver = None;
         self.stopped.store(true, Relaxed);
-        if let Some(mut child) = self.child.take() {
-            #[cfg(unix)]
-            drop(crate::sys::kill_process_group(child.id()));
-            drop(child.kill());
+        if let Some(child) = self.child.take() {
+            // nohup jobs survive editor exit; the worker only reaps them when they finish.
             if let Some(reaper) = self.reaper.take() {
                 drop(reaper.send(child));
             }
@@ -314,6 +320,7 @@ mod tests {
     use super::{MAX_LINE_BYTES, MAX_LINES, Output};
     use std::{
         io,
+        os::unix::fs::PermissionsExt,
         process::Command,
         sync::Arc,
         thread,
@@ -321,8 +328,8 @@ mod tests {
     };
 
     fn shell(script: &str) -> Command {
-        let mut command = Command::new("sh");
-        command.args(["-c", script]);
+        let mut command = Command::new("nohup");
+        command.args(["sh", "-c", script]);
         command
     }
 
@@ -330,6 +337,10 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         while output.is_running() {
             output.poll();
+            assert!(
+                !output.status.starts_with("Exited:") || !output.is_running(),
+                "completion was shown before the next job could start"
+            );
             assert!(Instant::now() < deadline, "shell output did not finish");
             thread::sleep(Duration::from_millis(2));
         }
@@ -337,16 +348,52 @@ mod tests {
 
     #[test]
     fn combined_streams_and_exit_status() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let log = directory.path().join("output.log");
         let mut output = Output::default();
         assert_eq!(output.status, "Idle");
         assert!(!output.poll(), "idle polling should not report changes");
-        let mut command = shell("printf 'out\\n'; printf 'err\\n' >&2; exit 7");
-        output.start(&mut command)?;
+        let mut command =
+            shell("printf '\\033[31mout\\033[0m\\n'; printf '\\001err\\000\\n' >&2; exit 7");
+        output.start(&mut command, log.clone())?;
         assert_eq!(output.status, "Running");
         finish(&mut output);
         assert_eq!(output.lines, ["out", "err", ""]);
         assert_eq!(output.status, "Exited: exit status: 7");
         assert!(!output.poll(), "finished polling should not report changes");
+        drop(output);
+        assert_eq!(std::fs::read(&log)?, b"\x1b[31mout\x1b[0m\n\x01err\0\n");
+        assert_eq!(std::fs::metadata(log)?.permissions().mode() & 0o777, 0o600);
+        Ok(())
+    }
+
+    #[test]
+    fn appends_existing_log_but_only_displays_new_output() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let log = directory.path().join("output.log");
+        std::fs::write(&log, b"old output\n")?;
+        let mut output = Output::default();
+        output.start(&mut shell("printf 'new output\\n'"), log.clone())?;
+        finish(&mut output);
+        assert_eq!(output.lines, ["new output", ""]);
+        assert_eq!(output.status, "Exited: exit status: 0");
+        drop(output);
+        assert_eq!(std::fs::read(log)?, b"old output\nnew output\n");
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_log_destination_prevents_spawn() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let marker = directory.path().join("spawned");
+        for log in [directory.path().to_path_buf(), directory.path().join("missing/output.log")] {
+            let mut output = Output::default();
+            let error =
+                output.start(shell("printf spawned > \"$1\"").arg("sh").arg(&marker), log).err();
+            assert!(error.is_some(), "invalid log destination was accepted");
+            assert!(!output.is_running(), "failed log open left a running job");
+            assert!(!marker.exists(), "command ran despite an invalid log destination");
+        }
         Ok(())
     }
 
@@ -357,7 +404,7 @@ mod tests {
         let mut output = Output::default();
         output.start(shell(
             "printf 'partial\\342'; while [ ! -f \"$1\" ]; do sleep 0.01; done; printf '\\202\\254\\377\\342'",
-        ).arg("sh").arg(&release))?;
+        ).arg("sh").arg(&release), directory.path().join("output.log"))?;
         let deadline = Instant::now() + Duration::from_secs(5);
         while output.lines.back().is_none_or(|line| line != "partial") {
             output.poll();
@@ -373,10 +420,11 @@ mod tests {
 
     #[test]
     fn sanitizes_terminal_sequences_and_progress() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
         let mut output = Output::default();
         output.start(&mut shell(
             "printf '\\033[31mred\\033[0m\\033]0;hidden\\007!\\033]8;;url\\033\\\\link\\033]8;;\\033\\\\\\nold progress\\rnew\\r\\n\\001a\\tbX\\b!\\033Psecret\\033\\\\'",
-        ))?;
+        ), directory.path().join("output.log"))?;
         finish(&mut output);
         assert_eq!(output.lines, ["red!link", "new", "a    b!"]);
         assert!(
@@ -416,12 +464,13 @@ mod tests {
 
     #[test]
     fn bounds_huge_lines_and_scrollback() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
         let mut output = Output::default();
-        output.start(&mut shell("printf '%0100000d' 0"))?;
+        output.start(&mut shell("printf '%0100000d' 0"), directory.path().join("output.log"))?;
         finish(&mut output);
         assert_eq!(output.lines.len(), 1);
         assert_eq!(output.lines[0].len(), MAX_LINE_BYTES);
-        output.start(&mut shell("i=0; while [ \"$i\" -lt 1500 ]; do printf '%09000d\\n' \"$i\"; i=$((i+1)); done; printf end"))?;
+        output.start(&mut shell("i=0; while [ \"$i\" -lt 1500 ]; do printf '%09000d\\n' \"$i\"; i=$((i+1)); done; printf end"), directory.path().join("output.log"))?;
         // Let the bounded channel fill before polling, as it would with an idle UI.
         thread::sleep(Duration::from_millis(30));
         finish(&mut output);
@@ -436,14 +485,19 @@ mod tests {
 
     #[test]
     fn restart_resets_state_and_stdin_is_closed() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
         let mut output = Output::default();
-        output.start(&mut shell("printf old; sleep 30"))?;
-        output.start(&mut shell("if read -r line; then exit 1; fi; printf new"))?;
+        output.start(&mut shell("printf old"), directory.path().join("old.log"))?;
+        output.start(
+            &mut shell("if read -r line; then exit 1; fi; printf new"),
+            directory.path().join("output.log"),
+        )?;
         finish(&mut output);
         assert_eq!(output.lines, ["new"]);
         assert_eq!(output.status, "Exited: exit status: 0");
-        let missing = tempfile::tempdir()?.path().join("missing-command");
-        let error = output.start(&mut Command::new(missing)).err();
+        let missing = directory.path().join("missing-command");
+        let error =
+            output.start(&mut Command::new(missing), directory.path().join("output.log")).err();
         assert_eq!(error.map(|error| error.kind()), Some(io::ErrorKind::NotFound));
         assert!(!output.is_running(), "failed spawn left a running job");
         assert!(output.lines.is_empty(), "failed spawn retained old output");
@@ -451,16 +505,18 @@ mod tests {
     }
 
     #[test]
-    fn drop_kills_descendants_and_reaps_shell() -> io::Result<()> {
+    fn drop_preserves_nohup_job_output_and_reaps_shell() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
         let marker = directory.path().join("survived");
         let mut output = Output::default();
         output.start(
-            shell("(sleep 0.5; printf survived > \"$1\") & printf ready; wait")
+            shell("(sleep 0.5; printf survived; printf error >&2; printf survived > \"$1\") & printf ready; wait")
                 .arg("sh")
                 .arg(&marker),
+            directory.path().join("output.log"),
         )?;
         let id = output.child.as_ref().map(std::process::Child::id);
+        let log = output.log_path.clone();
         let deadline = Instant::now() + Duration::from_secs(5);
         while output.lines.is_empty() {
             output.poll();
@@ -469,25 +525,33 @@ mod tests {
         }
         drop(output);
         if let Some(id) = id {
+            assert!(
+                Command::new("kill").args(["-HUP", "--", &format!("-{id}")]).status()?.success(),
+                "could not send hangup to the background job"
+            );
             while Command::new("kill")
                 .args(["-0", &id.to_string()])
                 .stderr(std::process::Stdio::null())
                 .status()?
                 .success()
             {
-                assert!(Instant::now() < deadline, "shell was not killed and reaped");
+                assert!(Instant::now() < deadline, "shell was not reaped after finishing");
                 thread::sleep(Duration::from_millis(2));
             }
         }
-        thread::sleep(Duration::from_millis(700));
-        assert!(!marker.exists(), "descendant survived dropping the output backend");
+        assert!(marker.exists(), "descendant did not survive dropping the output backend");
+        assert_eq!(std::fs::read_to_string(log)?, "readysurvivederror");
         Ok(())
     }
 
     #[test]
-    fn shell_exit_cleans_up_background_pipe_holders() -> io::Result<()> {
+    fn shell_exit_does_not_wait_for_background_log_writers() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
         let mut output = Output::default();
-        output.start(&mut shell("sleep 30 & printf finished"))?;
+        output.start(
+            &mut shell("sleep 0.2 & printf finished"),
+            directory.path().join("output.log"),
+        )?;
         finish(&mut output);
         assert_eq!(output.lines, ["finished"]);
         assert_eq!(output.status, "Exited: exit status: 0");
@@ -496,8 +560,12 @@ mod tests {
 
     #[test]
     fn drop_does_not_wait_for_a_full_output_channel() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
         let mut output = Output::default();
-        output.start(&mut shell("while :; do printf '%09000d' 0; done"))?;
+        output.start(
+            &mut shell("i=0; while [ \"$i\" -lt 100 ]; do printf '%09000d' 0; i=$((i+1)); done"),
+            directory.path().join("output.log"),
+        )?;
         thread::sleep(Duration::from_millis(50));
         let start = Instant::now();
         drop(output);
@@ -507,10 +575,11 @@ mod tests {
 
     #[test]
     fn reused_command_can_start_a_new_session() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
         let mut output = Output::default();
         let mut command = shell("printf reused");
         for _ in 0..2 {
-            output.start(&mut command)?;
+            output.start(&mut command, directory.path().join("output.log"))?;
             finish(&mut output);
             assert_eq!(output.lines, ["reused"]);
         }
@@ -519,15 +588,16 @@ mod tests {
 
     #[test]
     fn fast_output_drains_completely_after_exit() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
         let mut output = Output::default();
-        output.start(&mut shell("i=0; while [ \"$i\" -lt 60 ]; do printf '%07000d\\n' \"$i\"; i=$((i+1)); done; printf FINISHED"))?;
+        output.start(&mut shell("i=0; while [ \"$i\" -lt 60 ]; do printf '%07000d\\n' \"$i\"; i=$((i+1)); done; printf FINISHED"), directory.path().join("output.log"))?;
         let deadline = Instant::now() + Duration::from_secs(5);
         while output.child.is_some() {
             output.poll();
             assert!(Instant::now() < deadline, "large producer did not exit");
             thread::sleep(Duration::from_millis(2));
         }
-        // Backpressure after exit must not discard bytes already queued or in the pipe.
+        // Backpressure after exit must not discard bytes already queued or in the log.
         thread::sleep(Duration::from_millis(100));
         finish(&mut output);
         assert_eq!(output.lines.len(), 61);
@@ -558,7 +628,7 @@ mod tests {
                 command.env("KIBI_OUTPUT_BUSY_WRITER", "1");
             }
             let mut output = Output::default();
-            output.start(&mut command)?;
+            output.start(&mut command, directory.path().join("output.log"))?;
             let deadline = Instant::now() + Duration::from_secs(5);
             while !pid_file.exists() {
                 output.poll();

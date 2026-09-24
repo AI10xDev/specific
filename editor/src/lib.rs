@@ -20,6 +20,7 @@ mod error;
 mod markdown;
 mod output;
 mod row;
+mod spec_session;
 mod syntax;
 mod terminal;
 

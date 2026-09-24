@@ -14,6 +14,7 @@ use std::{
 
 use crate::output::Output;
 use crate::row::{HlState, Row};
+use crate::spec_session::SpecSession;
 use crate::{Config, Error, ansi_escape::*, syntax::Conf as SyntaxConf, sys, terminal};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -163,6 +164,9 @@ pub struct Editor {
     run_command: Option<std::ffi::OsString>,
     /// Captured shell output, separate from the editable document.
     output: Option<Output>,
+    /// Opted in by the spec alias, never by ordinary shell execution.
+    persistent_spec: bool,
+    spec_session: Option<SpecSession>,
 }
 
 pub struct CompletionAgentProcess(std::process::Child);
@@ -202,6 +206,8 @@ impl Default for Editor {
             last_completion_req_pos: None,
             output: run_command.as_ref().map(|_| Output::default()),
             run_command,
+            persistent_spec: std::env::var("KIBI_SPEC_SESSION").is_ok_and(|value| value == "1"),
+            spec_session: None,
         }
     }
 }
@@ -309,8 +315,18 @@ impl Editor {
             set_status!(self, "A command is already running");
             return;
         }
-        if let Err(error) = output.start(command) {
+        self.spec_session = None;
+        let mut name = self
+            .file_name
+            .as_deref()
+            .and_then(|name| Path::new(name).file_name())
+            .map_or_else(|| "untitled".into(), std::ffi::OsStr::to_os_string);
+        name.push(".out");
+        if let Err(error) = output.start(command, PathBuf::from(name)) {
             set_status!(self, "Can't run command: {error}");
+        } else {
+            let path = output.log_path.display().to_string();
+            set_status!(self, "Background output: {path}");
         }
         self.update_screen_cols();
     }
@@ -324,9 +340,43 @@ impl Editor {
             return;
         };
         // Resolve before passing the filename so leading dashes cannot become options.
-        match fs::canonicalize(file_name) {
-            Ok(path) => self.start_output(Command::new(command).arg(path)),
-            Err(error) => set_status!(self, "Can't run saved file: {error}"),
+        let path = match fs::canonicalize(file_name) {
+            Ok(path) => path,
+            Err(error) => {
+                set_status!(self, "Can't run saved file: {error}");
+                return;
+            }
+        };
+        if self.output.as_ref().is_some_and(Output::is_running) {
+            if let Some(session) = &mut self.spec_session {
+                match session.publish(&path) {
+                    Ok(()) => set_status!(self, "Saved; update queued for the running session"),
+                    Err(error) => set_status!(self, "Saved, but can't send update: {error}"),
+                }
+            } else {
+                set_status!(self, "A command is already running");
+            }
+            return;
+        }
+        let mut launch = Command::new("nohup");
+        launch.arg(command).arg(&path).env_remove("SPEC_SESSION_DIR");
+        if !self.persistent_spec {
+            self.start_output(&mut launch);
+            return;
+        }
+        let session = SpecSession::new().and_then(|mut session| {
+            session.publish(&path)?;
+            Ok(session)
+        });
+        match session {
+            Ok(session) => {
+                launch.env("SPEC_SESSION_DIR", &session.directory);
+                self.start_output(&mut launch);
+                if self.output.as_ref().is_some_and(Output::is_running) {
+                    self.spec_session = Some(session);
+                }
+            }
+            Err(error) => set_status!(self, "Can't start spec session: {error}"),
         }
     }
 
@@ -1102,7 +1152,10 @@ impl Editor {
                 set_status!(self, "Press Ctrl+Q {0} more time{1:.2$} to quit.", r, "s", r - 1);
                 reset_quit_times = false;
             }
-            Key::Char(RUN) if self.output.as_ref().is_some_and(Output::is_running) => {
+            Key::Char(RUN)
+                if self.output.as_ref().is_some_and(Output::is_running)
+                    && self.spec_session.is_none() =>
+            {
                 set_status!(self, "A command is already running");
             }
             Key::Char(SAVE | RUN) if let Some(file_name) = self.file_name.take() => {
@@ -1348,7 +1401,7 @@ impl PromptMode {
                 PromptState::Active(b) => return Some(Self::Execute(b)),
                 PromptState::Cancelled => (),
                 PromptState::Completed(b) => {
-                    ed.start_output(Command::new("bash").args(["-c", &b]));
+                    ed.start_output(Command::new("nohup").args(["bash", "-c", &b]));
                 }
             },
         }
@@ -1475,7 +1528,7 @@ mod tests {
         assert_eq!(editor.n_bytes, 0);
 
         for row in &editor.rows {
-            assert_eq!(row.chars, []);
+            assert!(row.chars.is_empty());
         }
     }
 
