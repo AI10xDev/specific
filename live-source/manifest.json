@@ -1,0 +1,56 @@
+{
+  "capturedAt": "2026-09-27T09:19:27.366934+00:00",
+  "sources": {
+    "opencode-source": {
+      "head": "7c7035da843e542aa843e8badf9f7c111a62fceb",
+      "note": "Working-tree contents, including uncommitted changes; not just HEAD.",
+      "runtimePatchBase": "909db63265971d67d2fe4ba7f9d7b74cc33e2fdc"
+    },
+    "nextweb": {
+      "head": "729d1fca958469989ef521dd8d6060c9e373171a",
+      "note": "Working-tree contents, including uncommitted changes; not just HEAD."
+    },
+    "specific": {
+      "head": "5c791c1045c48eb0794a1fb4766ad2855896ec82",
+      "note": "Editor source is already maintained in ../../editor; no duplicate binary included."
+    }
+  },
+  "files": {
+    "nextweb/tools/eval/README.md": "b42ebdc0f83e35e4bb0963aa7e094c04f7cc8e82f13b71b5051909fdb7e2ce88",
+    "nextweb/tools/eval/azure.mjs": "52d4ad31cf0c116c917a65f8dfcfaae3006321fc8880372efb626bac3a665b2a",
+    "nextweb/tools/eval/azure.test.mjs": "14306b061651d9a2d26b421999ed0dabee79940ce3325233f0f8d9d87552a6f9",
+    "nextweb/tools/eval/eval-daemon.cron": "aaab6f655b02ab7a1efca595878d0f6e206445d0af004433b8a8d9e006f295e2",
+    "nextweb/tools/eval/eval-daemon.service": "2b1671178e7cee3cd6af407c47ed857169e84e2ed4cd040deb1c1911472a883b",
+    "nextweb/tools/eval/eval.mjs": "6652f4e648c374bc3b59b85ea4e2325b66e1edcb0117345fc9be7e248c48b6db",
+    "nextweb/tools/eval/eval.test.mjs": "4ad0ca830c4139a1780b38d932fdaa38aad914f40d005630b933e2d0248b56ec",
+    "nextweb/tools/eval/install.sh": "e7d9b4a4fa08aa03ee76d57749bd98d86d13a766c3021885d7fb8eb9cad35765",
+    "nextweb/tools/eval/remediate.mjs": "eddd42aa09a726aac2b8b2b6c966f709792f9013bf76d5d38cf6da00437dcf85",
+    "nextweb/tools/eval/remediate.test.mjs": "eb65a645e524225fa75cc48b57627db271a170f74a6bbdb8f21f980d14bb7b62",
+    "nextweb/tools/eval/spec": "d7f5f4ab2a61e8f63fdba13cc4158e9785b80cb719edbf4998b84da314904130",
+    "nextweb/tools/eval/spec-eval": "7febcda3b2e18c997305a35d95e079c7bbcd674203a3c1f20ec64aff637dc1e2",
+    "nextweb/tools/eval/spec.test.mjs": "5f9f2bd7fe6dceb6b1a91b1f6ea3e61d40d3751b66288a6e8324e3ac1f5114fa",
+    "opencode-runtime.patch": "7810765dfe07cbc395f2613b5308590f2968f5a94624c395c1397f43ca2413c1",
+    "opencode-source/.opencode/agent/hypothesis.md": "5b43650cb1d11ecffc7931db04f7dbfd2a5ab003a1dd01ed4d5231211ec8f327",
+    "opencode-source/.opencode/command/eval.md": "eebc2de8ae4f277399699ea99c7c5375e1c36d614bacbf28ed4a32bfa34bd881",
+    "opencode-source/.opencode/command/save.md": "6aab509184b23ef53938c376cb370a37f963ae8ac2eb972618a0d036723f6847",
+    "opencode-source/.opencode/command/spec_out.md": "1f879cfd9a4cafb50b6dc8382189aa36f35cf412351198ae51b7013f8ab6e9aa",
+    "opencode-source/.opencode/command/telle.md": "be82ac8bb302125d21498a0ce23e2a6107cb699d3f35ad092de59fff6e31b859",
+    "opencode-source/LICENSE": "625f0f619133f89bbbb2abe37369613dfa1885eba1e50d02170deb62bb42cb6b",
+    "opencode-source/README.permissions.md": "b9e0174dff6969fad3cf160a07d108e134620db39ad8031800c611fcd6b3cb8d",
+    "opencode-source/packages/opencode/test/cli/fixtures/spec-server.ts": "b16901c25122b6aa8b403ac371c238dbe8f58225885f9947ddd2cdbbeaae60e4",
+    "opencode-source/packages/opencode/test/cli/run-spec.test.ts": "89ae5d15004154bcb43d04912efa804d97457d20358a7945d105a0fc2ad3bff7",
+    "opencode-source/packages/opencode/test/cli/spec-session.test.ts": "b4afb45cc55998d52898437ac1e32922c8c2a829142b89fdbf596c4d376931a7",
+    "opencode-source/packages/opencode/test/cli/spec-workflow.test.ts": "5fec928cfa9e90de7b89fe3e1f13eb830267bb6a9b61043efeacb579a5b6cebd",
+    "opencode-source/packages/opencode/test/cli/telle.test.ts": "d49f5e575e495fad66a3e11835cefdb77e0d8953506824fe5567629aed5e3a6c",
+    "opencode-source/script/opencode-build.sh": "942b6cdca5eaab0a21b307623ff42fc692b3570fbc1a657d562c2df8be6e6ad6",
+    "opencode-source/script/run-spec-plan.sh": "dc21ec412ae82bd2a3e525cdfa0f9541e95ec1bdc934409d0ba8ef3c81bde9d5",
+    "opencode-source/script/run-spec.sh": "e631c84a09066d32ad309bf9292265d742c7104a5e8f6d1fbd354d4e8dc842cb",
+    "opencode-source/script/spec-session.md": "2713c0ec9078c6f1f9190c2564bcd2423eb2cacfed7fd960fdc616289fb944ca",
+    "opencode-source/script/spec-session.ts": "5881152f1ba836c0ab18c6eb592a4900b3f985d7c2f43cef26e15b1dca7df911",
+    "opencode-source/script/spec-workflow.ts": "7bda51df6190834a584a6e542163c13ea069734b32ce86fcb213a433827a1baa",
+    "opencode-source/script/spec-workflows.md": "e21ab1ae34fb8bf6a4e552100f6b257a1fbf63f12d4cc59564e8b6c87c0507df",
+    "opencode-source/script/telle.md": "f121b1d98f8e1f3b1a3237c0831d09878e35ffa2133b99e16dd98815159e9b51",
+    "opencode-source/script/telle.ts": "381a3ad172d2ce982fa32737cd016b82f6f372549ead79fbb4d7256f7c9c1dba",
+    "shell/spec.bash": "3b52491be13ea17b71e6e93aaa9ab412556257dba300f37df645fa6657bfe19e"
+  }
+}

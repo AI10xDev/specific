@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$PWD
+for (( i=1; i <= $#; i++ )); do
+  if [[ "${!i}" == --repo ]]; then
+    j=$((i+1))
+    root=${!j:?--repo needs a path}
+  fi
+done
+if [[ " ${*} " == *" --help "* ]]; then
+  exec node "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/eval.mjs" --help
+fi
+root=$(git -C "$root" rev-parse --show-toplevel)
+# A kernel-held lock covers the entire run and releases even after a crash.
+lock=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)/spec-eval.lock
+exec flock -n -E 75 "$lock" node "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/eval.mjs" "$@"

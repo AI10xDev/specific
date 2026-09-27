@@ -1,0 +1,4 @@
+# Systemd starts Eval Daemon on VM boot; cron triggers it hourly after ingestion lag.
+SHELL=/bin/sh
+PATH=/usr/bin:/bin
+5 * * * * root /usr/bin/systemctl start --no-block eval-daemon.service

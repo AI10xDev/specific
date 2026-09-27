@@ -7,6 +7,11 @@ chosen specification to OpenCode's `plan` or `build` agent.
 
 OpenCode remains an external runtime dependency. No provider is assumed.
 
+For the source of the development machine's active `spec` command (including its
+shell integration, persistent runners, eval tools, and runtime changes), see the
+[2026-09-27 live-source snapshot](live-source/README.md). This archive is separate
+from the portable package and is not installed by `install.sh`.
+
 ## Runtime Model
 
 ```text

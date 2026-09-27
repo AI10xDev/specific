@@ -1,0 +1,26 @@
+[Unit]
+Description=Eval Daemon
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=opencode
+Group=opencode
+WorkingDirectory=/home/opencode/nextweb
+Environment=HOME=/home/opencode
+# Use Node directly: snap-confine cannot run under NoNewPrivileges.
+Environment=PATH=/snap/node/current/bin:/home/opencode/.local/bin:/home/opencode/.opencode/bin:/usr/local/bin:/usr/bin:/bin
+Environment=EVAL_AUTO_FIX=1
+EnvironmentFile=-/home/opencode/.config/spec-eval.env
+ExecStart=/home/opencode/nextweb/tools/eval/spec-eval --repo /home/opencode/nextweb
+TimeoutStartSec=50min
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+SuccessExitStatus=75
+
+[Install]
+WantedBy=multi-user.target
