@@ -12,6 +12,14 @@ shell integration, persistent runners, eval tools, and runtime changes), see the
 [2026-09-27 live-source snapshot](live-source/README.md). This archive is separate
 from the portable package and is not installed by `install.sh`.
 
+## Screenshot Preview
+
+[![Animated overview and detail views of the uploaded OpenCode terminal screenshot](docs/assets/screenshot-preview.gif)](Screenshot%20From%202026-07-08%2013-03-13.png)
+
+Looping overview and close-ups of the uploaded OpenCode screenshot—not a live
+recording of `spec`. Click the GIF to view the original full-resolution image.
+The [preview generator](docs/assets/generate-preview.py) documents how to rebuild it.
+
 ## Runtime Model
 
 ```text
