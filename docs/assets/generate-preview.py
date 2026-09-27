@@ -11,29 +11,30 @@ The frames show static crops, not simulated application activity.
 
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 
 def main():
     root = Path(__file__).resolve().parents[2]
-    source = root / "Screenshot From 2026-07-08 13-03-13.png"
+    source = root / "Screenshot From 2026-09-27 19-13-35.png"
     destination = Path(__file__).with_name("screenshot-preview.gif")
     with Image.open(source) as screenshot:
-        # Exclude desktop chrome and unrelated terminal tabs from the preview.
-        terminal = screenshot.convert("RGB").crop((75, 126, 1912, 1060))
+        terminal = screenshot.convert("RGB")
 
+    width, height = terminal.size
     views = [
         ("Overview", terminal),
-        ("Detail: response", terminal.crop((0, 0, 1280, 650))),
-        ("Detail: workflow and prompt", terminal.crop((0, 284, 1280, 934))),
+        ("Detail: output pane", terminal.crop((0, 0, width // 2, height // 2))),
+        ("Detail: spec buffer", terminal.crop((width // 2, 0, width, height // 2))),
     ]
+    preview_size = (1200, round(1200 * height / width))
     font = ImageFont.load_default(size=20)
     frames = []
     for label, view in views:
-        frame = Image.new("RGB", (1200, 658), "#111318")
+        frame = Image.new("RGB", (preview_size[0], preview_size[1] + 48), "#111318")
         draw = ImageDraw.Draw(frame)
-        draw.text((18, 13), f"OpenCode screenshot | {label}", font=font, fill="#e6edf3")
-        frame.paste(view.resize((1200, 610), Image.Resampling.LANCZOS), (0, 48))
+        draw.text((18, 13), f"spec screenshot | {label}", font=font, fill="#e6edf3")
+        frame.paste(ImageOps.contain(view, preview_size, Image.Resampling.LANCZOS), (0, 48))
         frames.append(frame.quantize(colors=128, dither=Image.Dither.NONE))
 
     frames[0].save(

@@ -16,16 +16,18 @@ from the portable package and is not installed by `install.sh`.
 
 ### Original Screenshot
 
-![Original OpenCode terminal screenshot](Screenshot%20From%202026-07-08%2013-03-13.png)
+![Original spec editor screenshot showing the output pane and spec buffer](Screenshot%20From%202026-09-27%2019-13-35.png)
 
-The original screenshot from this repository, displayed directly as a static PNG.
+The repository's `Screenshot From 2026-09-27 19-13-35.png`, displayed directly
+as an unmodified static image.
 
 ### Animated Preview
 
-[![Animated overview and detail views of the uploaded OpenCode terminal screenshot](docs/assets/screenshot-preview.gif)](Screenshot%20From%202026-07-08%2013-03-13.png)
+[![Animated overview and close-ups of the spec editor output pane and spec buffer](docs/assets/screenshot-preview.gif)](Screenshot%20From%202026-09-27%2019-13-35.png)
 
-Looping overview and close-ups of the uploaded OpenCode screenshot—not a live
-recording of `spec`. Click the GIF to view the original full-resolution image.
+Generated from that same screenshot: a looping overview, output-pane close-up,
+and spec-buffer close-up—not a live recording of `spec`. Click the GIF to view
+the original full-resolution image.
 The [preview generator](docs/assets/generate-preview.py) documents how to rebuild it.
 
 ## Runtime Model
