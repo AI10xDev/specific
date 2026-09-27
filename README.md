@@ -14,6 +14,14 @@ from the portable package and is not installed by `install.sh`.
 
 ## Screenshot Preview
 
+### Original Screenshot
+
+![Original OpenCode terminal screenshot](Screenshot%20From%202026-07-08%2013-03-13.png)
+
+The original screenshot from this repository, displayed directly as a static PNG.
+
+### Animated Preview
+
 [![Animated overview and detail views of the uploaded OpenCode terminal screenshot](docs/assets/screenshot-preview.gif)](Screenshot%20From%202026-07-08%2013-03-13.png)
 
 Looping overview and close-ups of the uploaded OpenCode screenshot—not a live
