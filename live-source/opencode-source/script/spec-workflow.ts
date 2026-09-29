@@ -3,8 +3,14 @@ import { main } from "./telle"
 
 export async function dispatch(args: string[]) {
   const action = args[0]
+  if (action === "--manual" || action === "--help" || action === "-h") {
+    if (args.length !== 1) throw new Error(`Usage: spec ${action}`)
+    const file = action === "--manual" ? "spec-manual.md" : "spec-help.txt"
+    process.stdout.write(await Bun.file(path.join(import.meta.dir, file)).text())
+    return
+  }
   if (action === "/telle" || action === "telle") return main(args.slice(1))
-  if (action !== "/eval") throw new Error("Usage: spec /eval [guidance] | spec /telle [action]")
+  if (action !== "/eval") throw new Error("Usage: spec /eval [guidance] | spec /telle [action] | spec --manual | spec --help")
 
   // Load the same definitions as the TUI, including when spec is used in another repo.
   const definitions = await Promise.all(

@@ -108,6 +108,30 @@ test("/eval preserves literal arguments, cwd, inherited environment and unrelate
   expect(await Bun.file(path.join(tmp.extra.cwd, "injected")).exists()).toBe(false)
 })
 
+test.each(["--manual", "--help", "-h"])("%s prints local documentation without side effects", async (flag) => {
+  await using tmp = await fixture()
+  const result = await tmp.extra.invoke([flag], { OPENCODE_CONFIG_CONTENT: "invalid JSON" })
+  expect(result).toEqual({
+    code: 0,
+    stdout: await Bun.file(path.join(path.dirname(script), flag === "--manual" ? "spec-manual.md" : "spec-help.txt")).text(),
+    stderr: "",
+  })
+  expect(result.stdout).toContain("spec --manual")
+  expect(result.stdout).toContain("Ctrl+R")
+  expect(await tmp.extra.capture.exists()).toBe(false)
+  expect(await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: tmp.extra.cwd, dot: true }))).toEqual([])
+})
+
+test.each(["--manual", "--help", "-h"])("%s rejects extra arguments without launching work", async (flag) => {
+  await using tmp = await fixture()
+  expect(await tmp.extra.invoke([flag, "feature.md"])).toEqual({
+    code: 1,
+    stdout: "",
+    stderr: `Usage: spec ${flag}\n`,
+  })
+  expect(await tmp.extra.capture.exists()).toBe(false)
+})
+
 test("/eval defaults to opencode on PATH and accepts no guidance or inline config", async () => {
   await using tmp = await fixture()
   expect((await tmp.extra.invoke(["/eval"], { SPEC_OPENCODE: undefined })).code).toBe(0)

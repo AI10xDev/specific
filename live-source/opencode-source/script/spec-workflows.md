@@ -7,6 +7,8 @@ The installed `spec` executable and Bash `spec()` function on this machine dispa
 the following commands from the caller's working directory:
 
 ```sh
+spec --help
+spec --manual
 spec /eval "Investigate p99 latency against the documented SLO"
 spec /telle init
 spec /telle check
@@ -16,6 +18,10 @@ spec /telle start
 spec /telle status
 spec /telle stop
 ```
+
+`spec --manual` prints the [step-by-step guide](spec-manual.md) without opening
+the editor or calling a model. `spec --help` (or `spec -h`) prints a short command
+summary. Pipe the manual to `less` to page it, or redirect it to save a copy.
 
 Reload `~/.bash_aliases` in existing shells, or open a new shell, to update the
 function. `spec telle` is equivalent to `spec /telle`. Existing `spec eval`,
@@ -60,7 +66,7 @@ add this dispatch before existing cases in your `spec` shell function or launche
 using the actual absolute Bun and checkout paths:
 
 ```sh
-if [[ "${1:-}" == /eval || "${1:-}" == /telle || "${1:-}" == telle ]]; then
+if [[ "${1:-}" == --manual || "${1:-}" == --help || "${1:-}" == -h || "${1:-}" == /eval || "${1:-}" == /telle || "${1:-}" == telle ]]; then
   /absolute/path/to/bun /absolute/path/to/checkout/script/spec-workflow.ts "$@"
   return
 fi
